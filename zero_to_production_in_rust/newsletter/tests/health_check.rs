@@ -1,16 +1,23 @@
 use std::net::TcpListener;
+use secrecy::ExposeSecret;
 
-use newsletter::configuration::DatabaseSettings;
+use newsletter::{configuration::DatabaseSettings, telemetry::{get_subscriber, init_subscriber}};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
+use once_cell::sync::Lazy;
 
 pub struct TestApp {
     pub address: String,
     pub db_pool: PgPool,
 }
 
+static TRACING: Lazy<()> = Lazy::new(|| {
+    let subscriber = get_subscriber("test".into(), "debug".into());
+    init_subscriber(subscriber);
+});
+
 pub async fn configure_database(configuration: &DatabaseSettings) -> PgPool {
-    let mut connection = PgConnection::connect(&configuration.connection_string_without_db())
+    let mut connection = PgConnection::connect(&configuration.connection_string_without_db().expose_secret())
         .await
         .expect("Failed to connect to Postgres.");
     connection
@@ -21,7 +28,7 @@ pub async fn configure_database(configuration: &DatabaseSettings) -> PgPool {
         .await
         .expect("Failed to create database.");
 
-    let connection_pool = PgPool::connect(&configuration.connection_string_without_db())
+    let connection_pool = PgPool::connect(&configuration.connection_string_without_db().expose_secret())
         .await
         .expect("Failed to connect to Postgres.");
     sqlx::migrate!("./migrations")
@@ -33,6 +40,8 @@ pub async fn configure_database(configuration: &DatabaseSettings) -> PgPool {
 }
 
 async fn spawn_app() -> TestApp {
+    Lazy::force(&TRACING);
+
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind random port.");
     let port = listener.local_addr().unwrap().port();
     let mut configuration =

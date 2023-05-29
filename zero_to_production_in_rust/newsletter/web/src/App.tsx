@@ -6,7 +6,6 @@ function Form() {
         e.preventDefault();
         const formElement = e.target as HTMLFormElement;
         const values = Object.fromEntries(new FormData(formElement));
-        debugger
         try {
             const url = new URL('http://0.0.0.0:8000/subscriptions');
             const response = await fetch(url.toString(), {
