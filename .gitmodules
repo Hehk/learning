@@ -1,3 +1,6 @@
 [submodule "fastbook"]
 	path = fastbook
 	url = git@github.com:Hehk/fastbook.git
+[submodule "performance_aware_programming/computer_enhance"]
+	path = performance_aware_programming/computer_enhance
+	url = git@github.com:cmuratori/computer_enhance.git
