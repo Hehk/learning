@@ -1,6 +1,4 @@
 (executable
- (public_name cpu_8086)
- (name cpu_8086)
- (libraries base stdio)
- (preprocess (pps ppx_deriving.show))
- (flags :standard -w -33 -w -32 -w -26))
+ (public_name cpu)
+ (name main)
+ (libraries cpu))
