@@ -13,10 +13,22 @@ module P = struct
 end
 
 type t =
-  | Move_Register_Or_Memory_To_Or_From_Register of
-      (P.direction * P.word * P.mode * P.reg * P.rm * P.displacement)
-  | Move_Immediate_To_Register_Or_Memory of
-      (P.word * P.mode * P.rm * P.displacement * P.data)
+  | Move_Register_Or_Memory_To_Or_From_Register of {
+      direction : bool;
+      word : bool;
+      mode : int;
+      reg : int;
+      rm : int;
+      displacement : int;
+    }
+  | Move_Immediate_To_Register_Or_Memory of {
+      word : bool;
+      mode : bool;
+      rm : bool;
+      disp_1 : int option;
+      disp_2 : int option;
+      data : int;
+    }
   | Move_Immediate_To_Register of (P.word * P.reg * P.data)
   | Move_Memory_To_Accumulator of (P.word * P.address)
   | Move_Accumulator_To_Memory of (P.word * P.address)
@@ -60,16 +72,19 @@ let combine = List.fold_left ~f:(fun acc b -> (acc lsl 1) + b) ~init:0
 
 let show_asm instruction =
   match instruction with
-  | Move_Register_Or_Memory_To_Or_From_Register
-      (d, w, mode, reg, rm, displacement) ->
-      Printf.sprintf "mov %s, %s"
-        (Register.show_register w rm)
-        (Register.show_register w reg)
+  | Move_Register_Or_Memory_To_Or_From_Register x ->
+      let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
+      let rm = Register.show_rm rm in
+      let reg = Register.show_register x.word x.reg in
+      if x.direction then Printf.sprintf "mov %s, %s" reg rm
+      else Printf.sprintf "mov %s, %s" rm reg
   | Move_Immediate_To_Register (w, reg, data) ->
       Printf.sprintf "mov %s, %d" (Register.show_register w reg) data
   | x -> show x
 
 let decode_move_register_or_memory_to_or_from_register d w bytes =
+  let direction = d = 1 in
+  let word = w = 1 in
   match bytes with
   | b2 :: rest ->
       let mode = take_bits 0 2 b2 in
@@ -77,8 +92,8 @@ let decode_move_register_or_memory_to_or_from_register d w bytes =
       let rm = take_bits 5 3 b2 in
       let displacement, rest =
         match (mode, rm, rest) with
+        | 0, 6, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
         | 3, _, _ -> (0, rest)
-        | _, 6, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
         | 0, _, _ -> (0, rest)
         | 1, _, b3 :: rest -> (b3, rest)
         | 2, _, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
@@ -88,7 +103,7 @@ let decode_move_register_or_memory_to_or_from_register d w bytes =
                displacement"
       in
       ( Move_Register_Or_Memory_To_Or_From_Register
-          (d = 1, w = 1, mode, reg, rm, displacement),
+          { direction; word; mode; reg; rm; displacement },
         rest )
   | _ -> failwith "Move Register or Memory to or from Register: No second byte"
 
@@ -148,10 +163,13 @@ module Tests = struct
     let decode bytes =
       let hd = List.hd_exn bytes in
       let tl = List.tl_exn bytes in
-      let instruction, _ = decode_instruction hd tl in
-      instruction
+      let instruction, rest = decode_instruction hd tl in
+      let consumed = List.length bytes - List.length rest in
+      let consumed = List.take bytes consumed in
+      (instruction, show_raw_bytes consumed)
     in
-    let instruction = decode bytes in
+    let instruction, log = decode bytes in
+    let () = Stdio.printf "%s :\n%s" expected log in
     let asm = show_asm instruction in
     expect_s asm expected
 
@@ -183,36 +201,52 @@ module Tests = struct
 
   let%test_unit "decode_instruction mov cx, -12" =
     let bytes = start 11 listing_39 in
-    test_single_instruction
-      bytes
-      "mov cx, 65524"
+    test_single_instruction bytes "mov cx, 65524"
 
   let%test_unit "decode_instruction mov dx, 3948" =
     let bytes = start 14 listing_39 in
-    test_single_instruction
-      bytes
-      "mov dx, 3948"
+    test_single_instruction bytes "mov dx, 3948"
 
   let%test_unit "decode_instruction mov dx, -3948" =
     let bytes = start 17 listing_39 in
-    test_single_instruction
-      bytes
-      "mov dx, 61588"
+    test_single_instruction bytes "mov dx, 61588"
+
+  (* mov al, [bx + si] *)
+  (* mov bx, [bp + di] *)
+  (* mov dx, [bp] *)
+  let%test_unit "decode_instruction mov al, [bx + si]" =
+    let bytes = start 20 listing_39 in
+    test_single_instruction bytes "mov al, [bx + si]"
+
+  let%test_unit "decode_instruction mov bx, [bp + di]" =
+    let bytes = start 22 listing_39 in
+    test_single_instruction bytes "mov bx, [bp + di]"
+
+  let%test_unit "decode_instruction mov dx, [bp]" =
+    let bytes = start 24 listing_39 in
+    test_single_instruction bytes "mov dx, [bp]"
+
+  let%test_unit "decode_instruction mov ah, [bx + si + 4]" =
+    let bytes = start 27 listing_39 in
+    test_single_instruction bytes "mov ah, [bx + si + 4]"
+
+  let%test_unit "decode_instruction mov al, [bx + si + 4999]" =
+    let bytes = start 30 listing_39 in
+    test_single_instruction bytes "mov al, [bx + si + 4999]"
+
+  (* ; Dest address calculation *)
+  (* mov [bx + di], cx *)
+  (* mov [bp + si], cl *)
+  (* mov [bp], ch *)
+  let%test_unit "decode_instruction mov [bx + di], cx" =
+    let bytes = start 34 listing_39 in
+    test_single_instruction bytes "mov [bx + di], cx"
+
+  let%test_unit "decode_instruction mov [bp + si], cl" =
+    let bytes = start 36 listing_39 in
+    test_single_instruction bytes "mov [bp + si], cl"
+
+  let%test_unit "decode_instruction mov [bp], ch" =
+    let bytes = start 38 listing_39 in
+    test_single_instruction bytes "mov [bp], ch"
 end
-
-(* ; 16-bit immediate-to-register *)
-
-(* mov al, [bx + si] *)
-(* mov bx, [bp + di] *)
-(* mov dx, [bp] *)
-
-(* ; Source address calculation plus 8-bit displacement *)
-(* mov ah, [bx + si + 4] *)
-
-(* ; Source address calculation plus 16-bit displacement *)
-(* mov al, [bx + si + 4999] *)
-
-(* ; Dest address calculation *)
-(* mov [bx + di], cx *)
-(* mov [bp + si], cl *)
-(* mov [bp], ch *)

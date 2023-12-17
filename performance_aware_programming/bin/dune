@@ -1,4 +1,4 @@
 (executable
- (public_name cpu)
- (name main)
+ (public_name decode)
+ (name decode)
  (libraries cpu))

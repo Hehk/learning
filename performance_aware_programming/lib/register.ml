@@ -17,6 +17,8 @@ type t =
   | BH
 [@@deriving show]
 
+type rm = bool * t option * t option * int option
+
 let parse word reg =
   match (word, reg) with
   | true, 0b000 -> Some AX
@@ -38,25 +40,61 @@ let parse word reg =
   | _ -> None
 
 let to_string = function
-| AX -> "ax"
-| CX -> "cx"
-| DX -> "dx"
-| BX -> "bx"
-| SP -> "sp"
-| BP -> "bp"
-| SI -> "si"
-| DI -> "di"
-| AL -> "al"
-| CL -> "cl"
-| DL -> "dl"
-| BL -> "bl"
-| AH -> "ah"
-| CH -> "ch"
-| DH -> "dh"
-| BH -> "bh"
+  | AX -> "ax"
+  | CX -> "cx"
+  | DX -> "dx"
+  | BX -> "bx"
+  | SP -> "sp"
+  | BP -> "bp"
+  | SI -> "si"
+  | DI -> "di"
+  | AL -> "al"
+  | CL -> "cl"
+  | DL -> "dl"
+  | BL -> "bl"
+  | AH -> "ah"
+  | CH -> "ch"
+  | DH -> "dh"
+  | BH -> "bh"
 
 let show_register word reg =
   match parse word reg with
   | Some reg -> to_string reg
-  (* TODO: handle this correctly *)
   | None -> Printf.sprintf "reg(%d)" reg
+
+let parse_rm mode disp word rm =
+  let disp =
+    match (mode, disp) with
+    | 0b00, _ -> None
+    | _, 0 -> None
+    | _, disp -> Some disp
+  in
+  match (mode, rm) with
+  | 0b11, rm -> (
+      match parse word rm with
+      | Some reg -> (false, Some reg, None, None)
+      (* not sure about the none case *)
+      | None -> failwith "Not sure on parsing rm")
+  | _, 0b000 -> (true, Some BX, Some SI, disp)
+  | _, 0b001 -> (true, Some BX, Some DI, disp)
+  | _, 0b010 -> (true, Some BP, Some SI, disp)
+  | _, 0b011 -> (true, Some BP, Some DI, disp)
+  | _, 0b100 -> (true, Some SI, None, disp)
+  | _, 0b101 -> (true, Some DI, None, disp)
+  | 0b00, 0b110 -> (true, None, None, disp)
+  | _, 0b110 -> (true, Some BP, None, disp)
+  | _, 0b111 -> (true, Some BX, None, disp)
+  | _ -> failwith "Not sure on parsing rm"
+
+let show_rm rm =
+  match rm with
+  | false, Some base, None, None -> Printf.sprintf "%s" (to_string base)
+  | true, Some base, None, None -> Printf.sprintf "[%s]" (to_string base)
+  | true, Some base, Some index, None ->
+      Printf.sprintf "[%s + %s]" (to_string base) (to_string index)
+  | true, Some base, None, Some disp ->
+      Printf.sprintf "[%s + %d]" (to_string base) disp
+  | true, Some base, Some index, Some disp ->
+      Printf.sprintf "[%s + %s + %d]" (to_string base) (to_string index) disp
+  | true, None, None, Some disp -> Printf.sprintf "[%d]" disp
+  | _ -> failwith "Not sure on showing rm"
