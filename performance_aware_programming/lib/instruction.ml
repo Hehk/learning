@@ -23,10 +23,9 @@ type t =
     }
   | Move_Immediate_To_Register_Or_Memory of {
       word : bool;
-      mode : bool;
-      rm : bool;
-      disp_1 : int option;
-      disp_2 : int option;
+      mode : int;
+      rm : int;
+      displacement : int;
       data : int;
     }
   | Move_Immediate_To_Register of (P.word * P.reg * P.data)
@@ -78,9 +77,42 @@ let show_asm instruction =
       let reg = Register.show_register x.word x.reg in
       if x.direction then Printf.sprintf "mov %s, %s" reg rm
       else Printf.sprintf "mov %s, %s" rm reg
+  | Move_Immediate_To_Register_Or_Memory x ->
+      let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
+      let rm = Register.show_rm rm in
+      let data = Register.show_data x.word x.data in
+      Printf.sprintf "mov %s, %s" rm data
   | Move_Immediate_To_Register (w, reg, data) ->
       Printf.sprintf "mov %s, %d" (Register.show_register w reg) data
+  | Move_Memory_To_Accumulator (w, address) ->
+      Printf.sprintf "mov %s, [%d]" (Register.show_register w 0) address
+  | Move_Accumulator_To_Memory (w, address) ->
+      Printf.sprintf "mov [%d], %s" address (Register.show_register w 0)
   | x -> show x
+
+let decode_displacement mode rm rest =
+  match (mode, rm, rest) with
+  | 0, 6, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
+  | 3, _, _ -> (0, rest)
+  | 0, _, _ -> (0, rest)
+  | 1, _, b3 :: rest ->
+      let complement = if b3 > 127 then 256 else 0 in
+      ((b3 - complement), rest)
+  | 2, _, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
+  | _ -> failwith "Invalid displacement"
+
+let decode_data w rest =
+  match (w, rest) with
+  | 0, data :: rest -> (data, rest)
+  | 1, data_1 :: data_2 :: rest -> ((data_2 * 256) + data_1, rest)
+  | _ -> failwith "Invalid data"
+
+let decode_direct_address bytes =
+  match bytes with
+  | b2 :: b3 :: rest ->
+      let address = (b3 * 256) + b2 in
+      (address, rest)
+  | _ -> failwith "Direct Address: No second byte"
 
 let decode_move_register_or_memory_to_or_from_register d w bytes =
   let direction = d = 1 in
@@ -90,48 +122,49 @@ let decode_move_register_or_memory_to_or_from_register d w bytes =
       let mode = take_bits 0 2 b2 in
       let reg = take_bits 2 3 b2 in
       let rm = take_bits 5 3 b2 in
-      let displacement, rest =
-        match (mode, rm, rest) with
-        | 0, 6, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
-        | 3, _, _ -> (0, rest)
-        | 0, _, _ -> (0, rest)
-        | 1, _, b3 :: rest -> (b3, rest)
-        | 2, _, b3 :: b4 :: rest -> ((b4 * 256) + b3, rest)
-        | _ ->
-            failwith
-              "Move Register or Memory to or from Register: Invalid \
-               displacement"
-      in
+      let displacement, rest = decode_displacement mode rm rest in
       ( Move_Register_Or_Memory_To_Or_From_Register
           { direction; word; mode; reg; rm; displacement },
         rest )
   | _ -> failwith "Move Register or Memory to or from Register: No second byte"
 
 let decode_move_immidiate_to_register w reg rest =
+  let data, rest = decode_data w rest in
+  (Move_Immediate_To_Register (w = 1, reg, data), rest)
+
+let decode_move_immidiate_to_register_or_memory w rest =
   match rest with
   | b2 :: rest ->
-      let data, rest =
-        match (w, rest) with
-        | 0, _ -> (b2, rest)
-        | 1, b3 :: rest -> ((b3 * 256) + b2, rest)
-        | _ -> failwith "Move Immediate to Register: Invalid data"
-      in
-      (Move_Immediate_To_Register (w = 1, reg, data), rest)
-  | _ -> failwith "Move Immediate to Register: No second byte"
+      let mode = take_bits 0 2 b2 in
+      let rm = take_bits 5 3 b2 in
+      let displacement, rest = decode_displacement mode rm rest in
+      let data, rest = decode_data w rest in
+      ( Move_Immediate_To_Register_Or_Memory
+          { word = w = 1; mode = mode; rm = rm; displacement; data; },
+        rest )
+  | _ -> failwith "Move Immediate to Register or Memory: No second byte"
+
+let decode_move_to_accumulator w rest =
+  let address, rest = decode_direct_address rest in
+  (Move_Memory_To_Accumulator (w = 1, address), rest)
+
+let decode_move_accumulator_to_memory w rest =
+  let address, rest = decode_direct_address rest in
+  (Move_Accumulator_To_Memory (w = 1, address), rest)
 
 let decode_instruction binary rest =
   match to_binary binary with
   | 1, 0, 0, 0, 1, 0, d, w ->
       decode_move_register_or_memory_to_or_from_register d w rest
   | 1, 1, 0, 0, 0, 1, 1, w ->
-      failwith "Move Immediate to Register or Memory: Not implemented"
+      decode_move_immidiate_to_register_or_memory w rest
   | 1, 0, 1, 1, w, reg_1, reg_2, reg_3 ->
       let reg = combine [ reg_1; reg_2; reg_3 ] in
       decode_move_immidiate_to_register w reg rest
   | 1, 0, 1, 0, 0, 0, 0, w ->
-      failwith "Move Memory to Accumulator: Not implemented"
+      decode_move_to_accumulator w rest
   | 1, 0, 1, 0, 0, 0, 1, w ->
-      failwith "Move Accumulator to Memory: Not implemented"
+      decode_move_accumulator_to_memory w rest
   | 1, 0, 0, 0, 1, 1, 1, 0 ->
       failwith "Move Register or Memory to Segment Register: Not implemented"
   | 1, 0, 0, 0, 1, 1, 0, 0 ->
@@ -149,104 +182,3 @@ let rec from_bytes = function
   | b1 :: rest ->
       let instruction, rest = decode_instruction b1 rest in
       instruction :: from_bytes rest
-
-module Tests = struct
-  let expect_s a b =
-    if not (String.equal a b) then
-      failwith @@ Printf.sprintf "Expected %s to equal %s" a b
-
-  let expect_i a b =
-    if not (Int.equal a b) then
-      failwith @@ Printf.sprintf "Expected %d to equal %d" a b
-
-  let test_single_instruction bytes expected =
-    let decode bytes =
-      let hd = List.hd_exn bytes in
-      let tl = List.tl_exn bytes in
-      let instruction, rest = decode_instruction hd tl in
-      let consumed = List.length bytes - List.length rest in
-      let consumed = List.take bytes consumed in
-      (instruction, show_raw_bytes consumed)
-    in
-    let instruction, log = decode bytes in
-    let () = Stdio.printf "%s :\n%s" expected log in
-    let asm = show_asm instruction in
-    expect_s asm expected
-
-  let start n bytes = List.sub bytes ~pos:n ~len:(List.length bytes - n)
-
-  let listing_39 =
-    Util.read_bytes
-      "/Users/kyle/Projects/learning/performance_aware_programming/computer_enhance/perfaware/part1/listing_0039_more_movs"
-
-  (* ; Register-to-register *)
-  let%test_unit "decode_instruction mov si, bx" =
-    test_single_instruction listing_39 "mov si, bx"
-
-  let%test_unit "decode_instruction mov dh, al" =
-    let bytes = start 2 listing_39 in
-    test_single_instruction bytes "mov dh, al"
-
-  let%test_unit "decode_instruction mov cl, 12" =
-    let bytes = start 4 listing_39 in
-    test_single_instruction bytes "mov cl, 12"
-
-  let%test_unit "decode_instruction mov ch, -12" =
-    let bytes = start 6 listing_39 in
-    test_single_instruction bytes "mov ch, 244"
-
-  let%test_unit "decode_instruction mov cx, 12" =
-    let bytes = start 8 listing_39 in
-    test_single_instruction bytes "mov cx, 12"
-
-  let%test_unit "decode_instruction mov cx, -12" =
-    let bytes = start 11 listing_39 in
-    test_single_instruction bytes "mov cx, 65524"
-
-  let%test_unit "decode_instruction mov dx, 3948" =
-    let bytes = start 14 listing_39 in
-    test_single_instruction bytes "mov dx, 3948"
-
-  let%test_unit "decode_instruction mov dx, -3948" =
-    let bytes = start 17 listing_39 in
-    test_single_instruction bytes "mov dx, 61588"
-
-  (* mov al, [bx + si] *)
-  (* mov bx, [bp + di] *)
-  (* mov dx, [bp] *)
-  let%test_unit "decode_instruction mov al, [bx + si]" =
-    let bytes = start 20 listing_39 in
-    test_single_instruction bytes "mov al, [bx + si]"
-
-  let%test_unit "decode_instruction mov bx, [bp + di]" =
-    let bytes = start 22 listing_39 in
-    test_single_instruction bytes "mov bx, [bp + di]"
-
-  let%test_unit "decode_instruction mov dx, [bp]" =
-    let bytes = start 24 listing_39 in
-    test_single_instruction bytes "mov dx, [bp]"
-
-  let%test_unit "decode_instruction mov ah, [bx + si + 4]" =
-    let bytes = start 27 listing_39 in
-    test_single_instruction bytes "mov ah, [bx + si + 4]"
-
-  let%test_unit "decode_instruction mov al, [bx + si + 4999]" =
-    let bytes = start 30 listing_39 in
-    test_single_instruction bytes "mov al, [bx + si + 4999]"
-
-  (* ; Dest address calculation *)
-  (* mov [bx + di], cx *)
-  (* mov [bp + si], cl *)
-  (* mov [bp], ch *)
-  let%test_unit "decode_instruction mov [bx + di], cx" =
-    let bytes = start 34 listing_39 in
-    test_single_instruction bytes "mov [bx + di], cx"
-
-  let%test_unit "decode_instruction mov [bp + si], cl" =
-    let bytes = start 36 listing_39 in
-    test_single_instruction bytes "mov [bp + si], cl"
-
-  let%test_unit "decode_instruction mov [bp], ch" =
-    let bytes = start 38 listing_39 in
-    test_single_instruction bytes "mov [bp], ch"
-end

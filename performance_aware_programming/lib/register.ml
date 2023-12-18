@@ -18,6 +18,7 @@ type t =
 [@@deriving show]
 
 type rm = bool * t option * t option * int option
+[@@deriving show]
 
 let parse word reg =
   match (word, reg) with
@@ -64,10 +65,9 @@ let show_register word reg =
 
 let parse_rm mode disp word rm =
   let disp =
-    match (mode, disp) with
-    | 0b00, _ -> None
-    | _, 0 -> None
-    | _, disp -> Some disp
+    match disp with
+    | 0 -> None
+    | disp -> Some disp
   in
   match (mode, rm) with
   | 0b11, rm -> (
@@ -97,4 +97,11 @@ let show_rm rm =
   | true, Some base, Some index, Some disp ->
       Printf.sprintf "[%s + %s + %d]" (to_string base) (to_string index) disp
   | true, None, None, Some disp -> Printf.sprintf "[%d]" disp
-  | _ -> failwith "Not sure on showing rm"
+  | _ -> 
+      let () = print_endline (show_rm rm) in
+      failwith "Not sure on showing rm"
+
+let show_data word data =
+  match word with
+  | true -> Printf.sprintf "word %d" data
+  | false -> Printf.sprintf "byte %d" data
