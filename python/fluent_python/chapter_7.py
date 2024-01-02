@@ -9,8 +9,9 @@ class Option():
         self.value = value
 
     def map(self, f):
-        if self.value != None:
+        if self.value is None:
             return self
-        return f(self.value)
+        return Option(f(self.value))
 
-
+    def __call__(self, f):
+        return self.map(f)
