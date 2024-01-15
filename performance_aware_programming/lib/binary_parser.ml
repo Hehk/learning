@@ -1,50 +1,86 @@
 open Base
 
-type 'a cursor = { location : int; value : 'a }
+type cursor = { location : int; value : (string * int) list }
 
-let take_n n bytes cursor =
-  let total_bits = List.length bytes * 8 in
-  if cursor.location + n > total_bits then failwith "Not enough bits left"
-  else
-    let rec extract_bits acc i location =
-      if i = n then acc
-      else
-        let byte_index = location / 8 in
-        let bit_index = location % 8 in
-        let byte = List.nth_exn bytes byte_index in
-        let bit = (byte lsr (7 - bit_index)) land 1 in
-        extract_bits ((acc lsl 1) lor bit) (i + 1) (location + 1)
-    in
-    let result = extract_bits 0 0 cursor.location in
-    let new_cursor =
-      { location = cursor.location + n; value = (cursor.value, result) }
-    in
-    (result, new_cursor)
+let ( let* ) x f = Option.bind ~f x
+
+let value cursor_value key =
+  let* value = List.find cursor_value ~f:(fun (k, _) -> String.equal k key) in
+  Some (snd value)
+
+let add_value cursor key value =
+  { cursor with value = (key, value) :: cursor.value }
+
+let take_n n cursor bits =
+  let bits = List.sub bits ~pos:cursor.location ~len:n in
+  let value = List.fold bits ~init:0 ~f:(fun acc bit -> (acc lsl 1) lor bit) in
+  let new_cursor = { cursor with location = cursor.location + n } in
+  (value, new_cursor)
 
 let bit_string_to_int bits =
   bits |> String.to_list
   |> List.map ~f:(fun bit -> if Char.equal bit '1' then 1 else 0)
   |> List.fold ~init:0 ~f:(fun acc bit -> (acc lsl 1) lor bit)
 
-let b bits cursor bytes =
-  let n = String.length bits in
-  let bits = bit_string_to_int bits in
-  let next_bits, new_cursor = take_n bits bytes cursor in
-  if bits = next_bits then
-    let new_cursor = { new_cursor with value = (new_cursor.value, bits) } in
-    Some new_cursor
-  else None
+let b bit_pattern cursor bits =
+  let bit_value = bit_string_to_int bit_pattern in
+  let n = String.length bit_pattern in
+  let value, new_cursor = take_n n cursor bits in
+  if value = bit_value then Some new_cursor else None
 
-let reg cursor bytes =
-  let _, new_cursor = take_n 3 bytes cursor in
+let w cursor bits =
+  let value, new_cursor = take_n 1 cursor bits in
+  let new_cursor = add_value new_cursor "w" value in
+  Some new_cursor
+
+let d cursor bits =
+  let value, new_cursor = take_n 1 cursor bits in
+  let new_cursor = add_value new_cursor "d" value in
+  Some new_cursor
+
+let s cursor bits =
+  let value, new_cursor = take_n 1 cursor bits in
+  let new_cursor = add_value new_cursor "s" value in
+  Some new_cursor
+
+let reg cursor bits =
+  let value, new_cursor = take_n 3 cursor bits in
+  let new_cursor = add_value new_cursor "reg" value in
   Some new_cursor
 
 let rem cursor bytes =
-  let _, new_cursor = take_n 3 bytes cursor in
+  let value, new_cursor = take_n 2 cursor bytes in
+  let new_cursor = add_value new_cursor "rem" value in
   Some new_cursor
 
-let ( >>= ) f g cursor bytes =
-  match f cursor bytes with Some cursor -> g cursor bytes | None -> None
+let parser pg cursor bits =
+  let parsers, f = pg in
+  let cursor =
+    List.fold parsers ~init:(Some cursor) ~f:(fun cursor p ->
+        match cursor with Some c -> p c bits | None -> None)
+  in
+  Option.map cursor ~f:(fun cursor -> (cursor, f cursor.value))
 
-let ( <|> ) f g cursor bytes =
-  match f cursor bytes with Some x -> x | None -> g cursor bytes
+let parse bytes parser_groups =
+  let to_bits byte =
+    let bit i = (byte lsr i) land 1 in
+    let rec aux i =
+      let bit = bit i in
+      bit :: aux (i - 1)
+    in
+    aux 7
+  in
+  let bits = bytes |> List.map ~f:to_bits |> List.concat in
+  let run_parser cursor =
+    List.find_map parser_groups ~f:(fun parser_group ->
+        parser parser_group cursor bits)
+  in
+  let cursor = { location = 0; value = [] } in
+  List.fold ~init:(cursor, [])
+    ~f:(fun (cursor, acc) _ ->
+      match run_parser cursor with
+      | Some (cursor, value) ->
+          let new_cursor = { cursor with value = [] } in
+          (new_cursor, value :: acc)
+      | None -> failwith "No parser matched")
+    bits

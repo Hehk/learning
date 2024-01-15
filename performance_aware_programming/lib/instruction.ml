@@ -133,14 +133,15 @@ let take_bits start len b =
 
 let combine = List.fold_left ~f:(fun acc b -> (acc lsl 1) + b) ~init:0
 
-let format_address address =
+let format_address size address =
+  let suffix = if size then "+0" else "" in
   if address + 2 > 0 then
     let address = address + 2 in
-    Printf.sprintf "$+%d+0" address
-  else if address + 2 = 0 then "$+0"
-  else Printf.sprintf "$%d+0" (address + 2)
+    Printf.sprintf "$+%d%s" address suffix
+  else if address + 2 = 0 then "$" ^ suffix
+  else Printf.sprintf "$%d%s" (address + 2) suffix
 
-let show_asm_data data =
+let show_asm_data size data =
   let show direction a b =
     if direction then Printf.sprintf "%s, %s" a b
     else Printf.sprintf "%s, %s" b a
@@ -154,7 +155,7 @@ let show_asm_data data =
   | `Immediate_to_register_or_memory (x : immediate_instruction) ->
       let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
       let rm = Register.show_rm rm in
-      let data = Register.show_data x.word x.data in
+      let data = Register.show_data size x.word x.data in
       Printf.sprintf "%s, %s" rm data
   | `Immediate_to_register { word; reg; data } ->
       Printf.sprintf "%s, %d" (Register.show_register word reg) data
@@ -164,7 +165,7 @@ let show_asm_data data =
         (Printf.sprintf "[%d]" address)
   | `Immediate_to_accumulator { data; word; direction } ->
       show direction (Register.show_register word 0) (Printf.sprintf "%d" data)
-  | `Address address -> format_address address
+  | `Address address -> format_address size address
 
 let show_asm_tag = function
   | Move_acc_to_mem _ | Move_mem_to_acc _ | Move_reg_or_mem_to_reg_or_mem _
@@ -263,9 +264,9 @@ let instruction_data = function
   | Loop_while_not_equal x -> `Address x
   | Jump_on_cx_zero x -> `Address x
 
-let show_asm instruction =
+let show_asm ?(size = true) instruction =
   let tag = show_asm_tag instruction in
-  let data = show_asm_data @@ instruction_data instruction in
+  let data = show_asm_data size @@ instruction_data instruction in
   tag ^ " " ^ data
 
 let decode_displacement mode rm rest =
