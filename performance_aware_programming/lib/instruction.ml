@@ -133,15 +133,14 @@ let take_bits start len b =
 
 let combine = List.fold_left ~f:(fun acc b -> (acc lsl 1) + b) ~init:0
 
-let format_address size address =
-  let suffix = if size then "+0" else "" in
+let format_address address =
   if address + 2 > 0 then
     let address = address + 2 in
-    Printf.sprintf "$+%d%s" address suffix
-  else if address + 2 = 0 then "$" ^ suffix
-  else Printf.sprintf "$%d%s" (address + 2) suffix
+    Printf.sprintf "$+%d" address
+  else if address + 2 = 0 then "$"
+  else Printf.sprintf "$%d" (address + 2)
 
-let show_asm_data size data =
+let show_asm_data data =
   let show direction a b =
     if direction then Printf.sprintf "%s, %s" a b
     else Printf.sprintf "%s, %s" b a
@@ -155,17 +154,17 @@ let show_asm_data size data =
   | `Immediate_to_register_or_memory (x : immediate_instruction) ->
       let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
       let rm = Register.show_rm rm in
-      let data = Register.show_data size x.word x.data in
+      let data = Register.show_data x.word x.data in
       Printf.sprintf "%s, %s" rm data
   | `Immediate_to_register { word; reg; data } ->
       Printf.sprintf "%s, %d" (Register.show_register word reg) data
   | `Memory_to_accumulator { word; address; direction } ->
       show direction
         (Register.show_register word 0)
-        (Printf.sprintf "[%d]" address)
+        (Printf.sprintf "[%s%d]" (if address >= 0 then "+" else "-") address)
   | `Immediate_to_accumulator { data; word; direction } ->
       show direction (Register.show_register word 0) (Printf.sprintf "%d" data)
-  | `Address address -> format_address size address
+  | `Address address -> format_address address
 
 let show_asm_tag = function
   | Move_acc_to_mem _ | Move_mem_to_acc _ | Move_reg_or_mem_to_reg_or_mem _
@@ -264,9 +263,9 @@ let instruction_data = function
   | Loop_while_not_equal x -> `Address x
   | Jump_on_cx_zero x -> `Address x
 
-let show_asm ?(size = true) instruction =
+let show_asm instruction =
   let tag = show_asm_tag instruction in
-  let data = show_asm_data size @@ instruction_data instruction in
+  let data = show_asm_data @@ instruction_data instruction in
   tag ^ " " ^ data
 
 let decode_displacement mode rm rest =

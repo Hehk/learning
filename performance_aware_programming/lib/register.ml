@@ -86,19 +86,17 @@ let show_rm rm =
   | false, Some base, None, None -> Printf.sprintf "%s" (to_string base)
   | true, Some base, None, None -> Printf.sprintf "[%s]" (to_string base)
   | true, Some base, Some index, None ->
-      Printf.sprintf "[%s + %s]" (to_string base) (to_string index)
+      Printf.sprintf "[%s+%s]" (to_string base) (to_string index)
   | true, Some base, None, Some disp ->
-      Printf.sprintf "[%s + %d]" (to_string base) disp
+      Printf.sprintf "[%s+%d]" (to_string base) disp
   | true, Some base, Some index, Some disp ->
-      Printf.sprintf "[%s + %s + %d]" (to_string base) (to_string index) disp
+      Printf.sprintf "[%s+%s+%d]" (to_string base) (to_string index) disp
   | true, None, None, Some disp -> Printf.sprintf "[%d]" disp
   | _ ->
       let () = print_endline (show_rm rm) in
       failwith "Not sure on showing rm"
 
-let show_data size word data =
-  if not size then Int.to_string data
-  else
-    match word with
-    | true -> Printf.sprintf "word %d" data
-    | false -> Printf.sprintf "byte %d" data
+let show_data word data =
+  match word with
+  | true -> Printf.sprintf "word %d" data
+  | false -> Printf.sprintf "byte %d" data

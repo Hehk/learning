@@ -6,11 +6,24 @@ type flags = {
   aux_carry : bool;
   carry : bool;
   overflow : bool;
-  parity: bool;
+  parity : bool;
 }
 
-type state = { registers : int array; ip : int; flags : flags }
-type update = { registers : int array; flags : flags; move : int }
+module MemoryMap = Map.M (Int)
+
+type state = {
+  registers : int array;
+  ip : int;
+  flags : flags;
+  memory : int MemoryMap.t;
+}
+
+type update = {
+  registers : int array;
+  flags : flags;
+  move : int;
+  memory : (int * int) option;
+}
 
 let take_high x = x lsr 8
 let take_low x = x land 0xff
@@ -19,9 +32,9 @@ let read_flags flags =
   [
     (flags.zero, "PZ");
     (flags.carry, "C");
-    (flags.sign, "S");
     (flags.parity, "P");
     (flags.aux_carry, "A");
+    (flags.sign, "S");
     (flags.overflow, "O");
   ]
   |> List.filter ~f:fst |> List.map ~f:snd |> String.concat ~sep:""
@@ -61,6 +74,10 @@ let read_register registers register =
   | BP -> registers.(6)
   | SP -> registers.(7)
 
+let read_value (state : state) = function
+  | `Reg register -> read_register state.registers register
+  | `Mem address -> Map.find state.memory address |> Option.value_exn
+
 let write_high old_value new_value = old_value land 0x00ff lor (new_value lsl 8)
 let write_low old_value new_value = old_value land 0xff00 lor new_value
 
@@ -88,36 +105,67 @@ let write_register registers register value =
   in
   registers
 
-let get_data instruction registers =
+let create_update target new_value registers flags =
+  match target with
+  | `Reg register ->
+      {
+        move = 0;
+        registers = write_register registers register new_value;
+        flags;
+        memory = None;
+      }
+  | `Mem address ->
+      { move = 0; registers; flags; memory = Some (address, new_value) }
+
+let calc_disp (state : state) rm =
+  match rm with
+  | false, Some reg, _, _ -> `Reg reg
+  | false, None, _, _ -> raise (Invalid_argument "not valid instruction")
+  | true, a, b, disp ->
+      let a =
+        Option.value_map ~default:0 ~f:(read_register state.registers) a
+      in
+      let b =
+        Option.value_map ~default:0 ~f:(read_register state.registers) b
+      in
+      let disp = Option.value ~default:0 disp in
+      let disp = a + b + disp in
+      `Mem disp
+
+let handle_immediate_instruction (state : state)
+    (x : Instruction.immediate_instruction) =
+  let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
+  let target = calc_disp state rm in
+  (target, x.data)
+
+let get_data (state : state) instruction =
   Instruction.(
     function
     | `Immediate_to_register { word; reg; data } ->
         let register = Register.parse word reg |> Option.value_exn in
-        (register, data)
-    | `Register_or_memory (x : register_or_memory) ->
-        let to_reg = Register.parse x.word x.reg |> Option.value_exn in
-        let from_reg = Register.parse x.word x.rm |> Option.value_exn in
-        let to_reg, from_reg =
-          if x.direction then (to_reg, from_reg) else (from_reg, to_reg)
-        in
-        let value = read_register registers from_reg in
-        (to_reg, value)
+        (`Reg register, data)
+    | `Register_or_memory (x : register_or_memory) -> (
+        let a = Register.parse x.word x.reg |> Option.value_exn in
+        let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
+        let b = calc_disp state rm in
+        match x.direction with
+        | false -> (b, read_value state (`Reg a))
+        | true -> (`Reg a, read_value state b))
     | `Immediate_to_register_or_memory (x : immediate_instruction) ->
-        let to_reg = Register.parse x.word x.rm |> Option.value_exn in
-        let value = x.data in
-        (to_reg, value)
+        handle_immediate_instruction state x
     | _ -> raise (Invalid_argument ("not valid instruction" ^ show instruction)))
 
 let log_diff a b =
-  Array.zip_exn a b
-  |> Array.find_mapi ~f:(fun i (x, y) ->
-         if x = y then None
-         else
-           let register = index_to_register i in
-           let log =
-             Printf.sprintf "%s:0x%x->0x%x" (Register.to_string register) x y
-           in
-           Some log)
+  let log =
+    Array.zip_exn a b
+    |> Array.find_mapi ~f:(fun i (x, y) ->
+           if x = y then None else Some (i, x, y))
+  in
+  match log with
+  | None -> None
+  | Some (i, x, y) ->
+      let register = index_to_register i in
+      Some (Printf.sprintf "%s:0x%x->0x%x" (Register.to_string register) x y)
 
 let log_flag old_flags new_flags =
   let ( = ) = phys_equal in
@@ -151,7 +199,7 @@ let log_ip old_ip new_ip =
   else Some (Printf.sprintf "ip:0x%x->0x%x" old_ip new_ip)
 
 let log_step instruction (s : state) (ns : state) =
-  let log = Instruction.show_asm ~size:false instruction ^ " ; " in
+  let log = Instruction.show_asm instruction ^ " ; " in
   let diff = log_diff s.registers ns.registers in
   let ip = log_ip s.ip ns.ip in
   let flag = log_flag s.flags ns.flags in
@@ -171,12 +219,14 @@ let update_flags flags value op1 op2 operation =
     match operation with
     | `Add -> value land 0x10000 <> 0
     | `Sub -> op1 < op2
+    | `Comp -> op1 < op2
     | _ -> flags.carry
   in
   let aux_carry =
     match operation with
     | `Add -> (op1 land 0xF) + (op2 land 0xF) > 0xF
     | `Sub -> op1 land 0xF < op2 land 0xF
+    | `Comp -> op1 land 0xF < op2 land 0xF
     | _ -> flags.aux_carry
   in
   let overflow =
@@ -184,7 +234,7 @@ let update_flags flags value op1 op2 operation =
     | `Add ->
         op1 land 0x8000 = op2 land 0x8000
         && value land 0x8000 <> op1 land 0x8000
-    | `Sub ->
+    | `Comp | `Sub ->
         op1 land 0x8000 <> op2 land 0x8000
         && value land 0x8000 = op2 land 0x8000
     | _ -> flags.overflow
@@ -196,54 +246,62 @@ let update_flags flags value op1 op2 operation =
 let handle_move (state : state) instruction =
   let open Instruction in
   let to_reg, from_value =
-    instruction |> instruction_data |> get_data instruction state.registers
+    instruction |> instruction_data |> get_data state instruction
   in
-  let registers = write_register state.registers to_reg from_value in
-  { registers; flags = state.flags; move = 0 }
+  create_update to_reg from_value state.registers state.flags
 
 let handle_sub (state : state) instruction =
   let open Instruction in
   let to_reg, from_value =
-    instruction |> instruction_data |> get_data instruction state.registers
+    instruction |> instruction_data |> get_data state instruction
   in
-  let to_value = read_register state.registers to_reg in
+  let to_value = read_value state to_reg in
   let result = int16_of_int (to_value - from_value) in
-  let registers = write_register state.registers to_reg result in
   let flags = update_flags state.flags result to_value from_value `Sub in
-  { registers; flags; move = 0 }
+  create_update to_reg result state.registers flags
 
 let handle_comp (state : state) instruction =
   let open Instruction in
   let to_reg, from_value =
-    instruction |> instruction_data |> get_data instruction state.registers
+    instruction |> instruction_data |> get_data state instruction
   in
-  let to_value = read_register state.registers to_reg in
+  let to_value = read_value state to_reg in
   let result = int16_of_int (to_value - from_value) in
   let flags = update_flags state.flags result to_value from_value `Comp in
   let new_state = { state with flags } in
-  { registers = new_state.registers; flags; move = 0 }
+  { registers = new_state.registers; flags; move = 0; memory = None }
 
 let handle_add (state : state) instruction =
   let open Instruction in
   let to_reg, from_value =
-    instruction |> instruction_data |> get_data instruction state.registers
+    instruction |> instruction_data |> get_data state instruction
   in
-  let to_value = read_register state.registers to_reg in
+  let to_value = read_value state to_reg in
   let result = int16_of_int (to_value + from_value) in
-  let registers = write_register state.registers to_reg result in
   let flags = update_flags state.flags result to_value from_value `Add in
-  { registers; flags; move = 0 }
+  create_update to_reg result state.registers flags
 
 let handle_jump (state : state) instruction =
-  { registers = state.registers; flags = state.flags; move = 0 }
+  { registers = state.registers; flags = state.flags; move = 0; memory = None }
 
 let exec_instruction (state : state) instruction =
   let open Instruction in
   match instruction with
   | Jump_on_not_equal address ->
       if state.flags.zero then
-        { registers = state.registers; flags = state.flags; move = 0 }
-      else { registers = state.registers; flags = state.flags; move = address }
+        {
+          registers = state.registers;
+          flags = state.flags;
+          move = 0;
+          memory = None;
+        }
+      else
+        {
+          registers = state.registers;
+          flags = state.flags;
+          move = address;
+          memory = None;
+        }
   | Jump_on_less _ | Jump_on_sign _ | Jump_on_not_sign _ ->
       handle_jump state instruction
   | Move_reg_or_mem_to_reg_or_mem _ | Move_imm_to_reg _ | Move_acc_to_mem _
@@ -265,6 +323,7 @@ let initial_state () =
   {
     registers = Array.init 8 ~f:(fun _ -> 0);
     ip = 0;
+    memory = Map.empty (module Int);
     flags =
       {
         zero = false;
@@ -276,11 +335,11 @@ let initial_state () =
       };
   }
 
-let exec_bytes bytes =
+let exec_bytes ?(max = 100) bytes =
   let len = List.length bytes in
-  let rec loop logs state =
+  let rec loop iter logs state =
     let remaining = len - state.ip in
-    if state.ip >= len then (state, List.rev logs)
+    if state.ip >= len || iter >= max then (state, List.rev logs)
     else
       let next_bytes = List.drop bytes state.ip in
       let b1, rest = (List.hd_exn next_bytes, List.tl_exn next_bytes) in
@@ -292,12 +351,17 @@ let exec_bytes bytes =
           registers = update.registers;
           ip = len - List.length rest + update.move;
           flags = update.flags;
+          memory =
+            (match update.memory with
+            | Some (address, value) ->
+                Map.set state.memory ~key:address ~data:value
+            | None -> state.memory);
         }
       in
       let log = log_step instruction state new_state in
-      loop (log :: logs) new_state
+      loop (iter + 1) (log :: logs) new_state
   in
-  loop [] @@ initial_state ()
+  loop 0 [] @@ initial_state ()
 
 let exec instructions =
   let rec loop logs state instructions =

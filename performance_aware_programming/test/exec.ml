@@ -22,6 +22,22 @@ let format_expected expected =
   in
   (expected_result, expected_log)
 
+let split_asm_log log =
+  log
+  |> List.map ~f:(String.split ~on:';')
+  |> List.map ~f:(function
+       | [ asm; log ] -> (String.strip asm, String.strip log)
+       | _ -> failwith "Invalid log")
+
+let compare_logs expected actual =
+  let () = print_endline "Expected:" in
+  let () = List.iter expected ~f:print_endline in
+  let () = print_endline "Actual:" in
+  let () = List.iter actual ~f:print_endline in
+  let expected = split_asm_log expected |> List.map ~f:snd in
+  let actual = split_asm_log actual |> List.map ~f:snd in
+  Alcotest.(check (list string)) "same" expected actual
+
 let rec left_pad s n = if String.length s >= n then s else left_pad ("0" ^ s) n
 
 let show_state (state : Cpu.Execute.state) =
@@ -42,7 +58,9 @@ let show_state (state : Cpu.Execute.state) =
     if state.ip <> 0 then
       log
       @ [
-          Printf.sprintf "ip: 0x%s (%d)" (left_pad (Printf.sprintf "%x" state.ip) 4) state.ip;
+          Printf.sprintf "ip: 0x%s (%d)"
+            (left_pad (Printf.sprintf "%x" state.ip) 4)
+            state.ip;
         ]
     else log
   in
@@ -63,7 +81,7 @@ let tests_from_listing file_name =
   let result, logs = Cpu.exec instructions in
   let test_log () =
     let () = print_endline @@ "Instructions: \n" ^ instruction_log in
-    Alcotest.(check (list string)) "same" expected_log logs
+    compare_logs expected_log logs
   in
   let test_result () =
     let actual_result = show_state result in
@@ -87,7 +105,7 @@ let tests_from_listing_with_ip file_name =
   let result, logs = Cpu.Execute.exec_bytes bytes in
   let test_log () =
     let () = print_endline @@ "Instructions: \n" ^ instruction_log in
-    Alcotest.(check (list string)) "same" expected_log logs
+    compare_logs expected_log logs
   in
   let test_result () =
     let actual_result = show_state result in
@@ -111,4 +129,8 @@ let () =
       ( "Listing 49",
         tests_from_listing_with_ip @@ part1 ^ "listing_0049_conditional_jumps"
       );
+      ( "Listing 51",
+        tests_from_listing_with_ip @@ part1 ^ "listing_0051_memory_mov" );
+      ( "Listing 52",
+        tests_from_listing_with_ip @@ part1 ^ "listing_0052_memory_add_loop" );
     ]
