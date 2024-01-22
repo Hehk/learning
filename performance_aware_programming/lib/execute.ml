@@ -16,6 +16,7 @@ type state = {
   ip : int;
   flags : flags;
   memory : int MemoryMap.t;
+  cycles : int;
 }
 
 type update = {
@@ -76,7 +77,7 @@ let read_register registers register =
 
 let read_value (state : state) = function
   | `Reg register -> read_register state.registers register
-  | `Mem address -> Map.find state.memory address |> Option.value_exn
+  | `Mem address -> Map.find state.memory address |> Option.value ~default:0
 
 let write_high old_value new_value = old_value land 0x00ff lor (new_value lsl 8)
 let write_low old_value new_value = old_value land 0xff00 lor new_value
@@ -198,13 +199,30 @@ let log_ip old_ip new_ip =
   if old_ip = new_ip then None
   else Some (Printf.sprintf "ip:0x%x->0x%x" old_ip new_ip)
 
-let log_step instruction (s : state) (ns : state) =
-  let log = Instruction.show_asm instruction ^ " ; " in
-  let diff = log_diff s.registers ns.registers in
-  let ip = log_ip s.ip ns.ip in
-  let flag = log_flag s.flags ns.flags in
-  let logs = List.filter_opt [ diff; ip; flag ] in
-  log ^ String.concat ~sep:" " logs |> String.strip
+let log_cycles (new_cycles, ea_cycles) total_cycles =
+  let cycles = Printf.sprintf "Clocks: +%d = %d" (new_cycles + ea_cycles) total_cycles in
+  if ea_cycles = 0 then cycles
+  else cycles ^ Printf.sprintf " (%d + %dea)" new_cycles ea_cycles
+
+type log = {
+  flag : string option;
+  ip : string option;
+  diff : string option;
+  clock : string;
+  instruction : string;
+  raw : Instruction.t;
+}
+[@@deriving show]
+
+let log_step instruction cycles (s : state) (ns : state) =
+  {
+    flag = log_flag s.flags ns.flags;
+    ip = log_ip s.ip ns.ip;
+    diff = log_diff s.registers ns.registers;
+    clock = log_cycles cycles ns.cycles;
+    instruction = Instruction.show_asm instruction;
+    raw = instruction;
+  }
 
 let bits_set_to_1 value =
   let rec count_bits v count =
@@ -324,6 +342,7 @@ let initial_state () =
     registers = Array.init 8 ~f:(fun _ -> 0);
     ip = 0;
     memory = Map.empty (module Int);
+    cycles = 0;
     flags =
       {
         zero = false;
@@ -335,9 +354,48 @@ let initial_state () =
       };
   }
 
+let calc_ea base index disp =
+  let open Register in
+  match (base, index, disp) with
+  | None, None, Some _ -> 6
+  | Some _, None, None -> 5
+  | None, Some _, None -> 5
+  | Some _, None, Some _ -> 9
+  | None, Some _, Some _ -> 9
+  | Some base, Some index, disp -> (
+      let ea =
+        match (base, index) with
+        | BP, DI | BX, SI -> 7
+        | BP, SI | BX, DI -> 8
+        | _ -> raise (Invalid_argument "invalide base/index")
+      in
+      ea + match disp with Some _ -> 4 | None -> 0)
+  | None, None, None -> raise (Invalid_argument "not valid instruction")
+
+let calc_cycles =
+  Instruction.(
+    function
+    | Move_imm_to_reg _ -> (4, 0)
+    | Move_reg_or_mem_to_reg_or_mem x -> (
+        let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
+        let is_mem, base, index, disp = rm in
+        match (is_mem, x.direction) with
+        | false, _ -> (2, 0)
+        | true, false -> (9, calc_ea base index disp)
+        | true, true -> (8, calc_ea base index disp))
+    | Add_reg_or_mem_to_reg_or_mem x -> (
+        let rm = Register.parse_rm x.mode x.displacement x.word x.rm in
+        let is_mem, base, index, disp = rm in
+        match (is_mem, x.direction) with
+        | false, _ -> (3, 0)
+        | true, true -> (9, calc_ea base index disp)
+        | true, false -> (16, calc_ea base index disp))
+    | Add_imm_to_reg_or_mem _ -> (4, 0)
+    | _ -> (0, 0))
+
 let exec_bytes ?(max = 100) bytes =
   let len = List.length bytes in
-  let rec loop iter logs state =
+  let rec loop iter logs (state : state) =
     let remaining = len - state.ip in
     if state.ip >= len || iter >= max then (state, List.rev logs)
     else
@@ -346,11 +404,13 @@ let exec_bytes ?(max = 100) bytes =
       let instruction, rest = Instruction.decode_instruction b1 rest in
 
       let update = exec_instruction state instruction in
+      let cycles, ea_cycles = calc_cycles instruction in
       let new_state =
         {
           registers = update.registers;
           ip = len - List.length rest + update.move;
           flags = update.flags;
+          cycles = state.cycles + cycles + ea_cycles;
           memory =
             (match update.memory with
             | Some (address, value) ->
@@ -358,21 +418,7 @@ let exec_bytes ?(max = 100) bytes =
             | None -> state.memory);
         }
       in
-      let log = log_step instruction state new_state in
+      let log = log_step instruction (cycles, ea_cycles) state new_state in
       loop (iter + 1) (log :: logs) new_state
   in
   loop 0 [] @@ initial_state ()
-
-let exec instructions =
-  let rec loop logs state instructions =
-    match instructions with
-    | [] -> (state, List.rev logs)
-    | instruction :: rest ->
-        let update = exec_instruction state instruction in
-        let new_state =
-          { state with registers = update.registers; flags = update.flags }
-        in
-        let log = log_step instruction state new_state in
-        loop (log :: logs) new_state rest
-  in
-  loop [] (initial_state ()) instructions

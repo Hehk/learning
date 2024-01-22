@@ -10,4 +10,3 @@ let show_bytes = Instruction.show_raw_bytes
 let from_bytes = Instruction.from_bytes
 let show_asm = Instruction.show_asm
 
-let exec = Execute.exec

@@ -1,3 +1,4 @@
 (tests
   (libraries alcotest cpu core_unix stdio base)
+ (preprocess (pps ppx_deriving.show))
  (names decode exec))
