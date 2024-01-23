@@ -1,4 +1,5 @@
 (executables
- (public_names decode)
- (names decode)
+ (public_names decode generate_pairs)
+ (names decode generate_pairs)
+ (preprocess (pps ppx_deriving.show))
  (libraries cpu))
